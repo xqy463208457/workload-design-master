@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import re
+
 # ---------------------------------------------------------------- 常量
 
 DAYS_PER_PM = 21.75  # 人月换算人天，取自模板公式 =D/21.75
@@ -306,6 +308,8 @@ def check_plan(plan: dict) -> list[str]:
     actual = float(plan.get("allocation", {}).get("pm_actual") or 0)
     if target and abs(actual - target) > 0.15:
         issues.append("折算人月 %.2f 与目标人月 %.2f 偏差过大" % (actual, target))
+
+    issues.extend(check_test_sections(plan))
     return issues
 
 
@@ -321,3 +325,110 @@ def split_items(text: str) -> list[str]:
         if any(ln.startswith(mk) for mk in marks):
             counted += 1
     return [""] * counted
+
+
+# ---------------------------------------------------------------- 测试段校验
+
+# 三段测试的固定导语关键词：缺任意一条即视为改写导语
+TEST_LEAD = {
+    "技术测试": ("梳理测试场景", "案例评审", "技术测试人员开展技术测试工作"),
+    "业务测试": ("为业务测试工作准备相应测试环境", "对测试出现的问题进行原因排查"),
+    "准生产": ("为准生产测试工作准备相应测试环境", "对测试出现的问题进行原因排查"),
+}
+
+# 场景数区间（下端, 上端）；业务测试上端由技术测试场景数动态约束
+SCENE_RANGE = {"技术测试": (1, 20), "业务测试": (1, None), "准生产": (1, 5)}
+
+# 单场景最短字数：技术测试要求写清入口与观察点，业务与准生产允许更短
+SCENE_MIN_LEN = {"技术测试": 15, "业务测试": 12, "准生产": 10}
+
+# 准生产场景应短，超过该长度视为照搬技术测试
+SCENE_MAX_LEN = {"准生产": 120}
+
+SCENE_RE = re.compile(r"场景\s*(\d+)\s*[：:]")
+_TABLE_NAME_RE = re.compile(r"\bT\d[A-Z0-9_]{3,}\b")
+_OBSERVE_WORDS = ("查看", "核对", "确认", "验证")
+
+
+def split_scenarios(text: str) -> list[tuple[int, str]]:
+    """把测试文案按「场景N：」切成 [(序号, 正文)]，用于校验条数与编号。"""
+    if not text:
+        return []
+    parts = SCENE_RE.split(text)
+    out = []
+    for i in range(1, len(parts) - 1, 2):
+        out.append((int(parts[i]), parts[i + 1].strip()))
+    return out
+
+
+def check_test_sections(plan: dict) -> list[str]:
+    """校验技术测试/业务测试/准生产三段的导语、场景句式和条数关系。"""
+    issues: list[str] = []
+    for m in plan.get("modules") or []:
+        mname = m.get("name", "")
+        for f in m.get("functions") or []:
+            label = "「%s / %s」" % (mname, f.get("name", ""))
+            tech_n: int | None = None
+            for stage in ("技术测试", "业务测试", "准生产"):
+                text = (f.get(stage) or "").strip()
+                if not text:
+                    issues.append("%s%s 为空" % (label, stage))
+                    continue
+                for kw in TEST_LEAD[stage]:
+                    if kw not in text:
+                        issues.append("%s%s 缺少固定导语「%s」" % (label, stage, kw))
+                scenes = split_scenarios(text)
+                if not scenes:
+                    issues.append("%s%s 未使用「场景N：」句式" % (label, stage))
+                    continue
+
+                nums = [n for n, _ in scenes]
+                if nums != list(range(1, len(nums) + 1)):
+                    issues.append("%s%s 场景编号应为 1..%d 连续：实际 %s"
+                                  % (label, stage, len(nums), nums))
+
+                lo, hi = SCENE_RANGE[stage]
+                if len(scenes) < lo:
+                    issues.append("%s%s 场景数 %d 少于下限 %d" % (label, stage, len(scenes), lo))
+                if hi is not None and len(scenes) > hi:
+                    issues.append("%s%s 场景数 %d 超过上限 %d" % (label, stage, len(scenes), hi))
+
+                if stage == "技术测试":
+                    tech_n = len(scenes)
+                elif stage == "业务测试" and tech_n is not None and len(scenes) > tech_n:
+                    issues.append("%s业务测试场景数 %d 超过技术测试场景数 %d"
+                                  % (label, len(scenes), tech_n))
+
+                for num, body in scenes:
+                    if len(body) < SCENE_MIN_LEN[stage]:
+                        issues.append("%s%s 场景%d 过短（%d 字），须写清角色、入口、动作与观察点"
+                                      % (label, stage, num, len(body)))
+                    cap = SCENE_MAX_LEN.get(stage)
+                    if cap and len(body) > cap:
+                        issues.append("%s%s 场景%d 过长（%d 字），准生产只留主链路"
+                                      % (label, stage, num, len(body)))
+                    if stage == "技术测试" and not any(w in body for w in _OBSERVE_WORDS):
+                        issues.append("%s技术测试 场景%d 缺少观察点动词（查看/核对/确认/验证）"
+                                      % (label, num))
+                    if stage == "业务测试" and _TABLE_NAME_RE.search(body):
+                        issues.append("%s业务测试 场景%d 出现表名/字段名，应改写为业务可见结果"
+                                      % (label, num))
+
+    # Word 测试要点：模块级汇总，同样用「场景N：」连续编号
+    for m in plan.get("modules") or []:
+        points = (m.get("design") or {}).get("test_points") or []
+        if not points:
+            continue
+        bad = [p for p in points if not SCENE_RE.match(p.strip())]
+        if bad:
+            issues.append("模块「%s」测试要点未使用「场景N：」句式：%s"
+                          % (m.get("name", ""), bad[0][:30]))
+        nums = []
+        for p in points:
+            hit = SCENE_RE.match(p.strip())
+            if hit:
+                nums.append(int(hit.group(1)))
+        if nums and nums != list(range(1, len(nums) + 1)):
+            issues.append("模块「%s」测试要点编号不连续：%s" % (m.get("name", ""), nums))
+    return issues
+

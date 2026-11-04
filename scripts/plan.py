@@ -106,6 +106,7 @@ def cmd_init(args):
         print("  - %-40s %d 行" % (m["name"][:40], len(m["functions"])))
     print("阶段人天：%s" % json.dumps(plan["allocation"]["stage_totals"], ensure_ascii=False))
     print("下一步：填写各功能的 需求/设计/开发/技术测试/业务测试/准生产 文案与 design 内容，再执行 fill。")
+    print("      写测试三段前先读 references/test-case-spec.md（固定导语、场景五要素、维度矩阵）。")
     return 0
 
 
@@ -140,6 +141,7 @@ def cmd_check(args):
     issues = wldlib.check_plan(plan)
     if not issues:
         print("校验通过：模块名称一致、开发单条在 3.5-9.5 且均值≈7.5、各阶段条目数 6-10 条、"
+              "测试三段导语与场景句式合规（业务场景数≤技术测试场景数）、"
               "设计文档段落齐备、库用户（%s）与表清单一致。" % (plan.get("project", {}).get("db_user") or "-"))
         return 0
     print("发现 %d 个问题：" % len(issues))

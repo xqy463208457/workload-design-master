@@ -47,6 +47,7 @@ workload-design-master/
 │   ├── estimation-rules.md  人天比例、区间、行数规律
 │   ├── excel-spec.md        Excel 列结构、合并规则、8 类文案范式
 │   ├── design-doc-spec.md   Word 章节与模块 7 段写法
+│   ├── test-case-spec.md    测试编写规范（技术/业务/准生产三段写法与场景矩阵）
 │   └── aml-table-index.md   真实表索引（按章节分组，生成物勿改）
 ├── scripts/
 │   ├── wldlib.py            分配算法、规则校验、库用户推断
