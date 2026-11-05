@@ -336,8 +336,8 @@ TEST_LEAD = {
     "准生产": ("为准生产测试工作准备相应测试环境", "对测试出现的问题进行原因排查"),
 }
 
-# 场景数区间（下端, 上端）；业务测试上端由技术测试场景数动态约束
-SCENE_RANGE = {"技术测试": (1, 20), "业务测试": (1, None), "准生产": (1, 5)}
+# 场景数区间（下端, 上端）：三段一律 7–20 条，业务与准生产另受技术测试条数约束
+SCENE_RANGE = {"技术测试": (7, 20), "业务测试": (7, 20), "准生产": (7, 20)}
 
 # 单场景最短字数：技术测试要求写清入口与观察点，业务与准生产允许更短
 SCENE_MIN_LEN = {"技术测试": 15, "业务测试": 12, "准生产": 10}
@@ -349,6 +349,17 @@ SCENE_RE = re.compile(r"场景\s*(\d+)\s*[：:]")
 _TABLE_NAME_RE = re.compile(r"\bT\d[A-Z0-9_]{3,}\b")
 _OBSERVE_WORDS = ("查看", "核对", "确认", "验证")
 
+# 正/反两类场景靠判据用词区分，正文中不得出现标签
+_POS_WORDS = ("正确", "正常", "成功", "一致", "走通", "可提交", "可保存", "可查询", "可查",
+              "可调阅", "可区分", "可见", "匹配", "准确", "完整", "无遗漏", "同步更新", "可追溯", "符合")
+_NEG_WORDS = ("拦截", "提示", "无权", "不可", "无法", "不得", "不能", "拒绝", "超限", "为空", "空值",
+              "重复", "失败", "异常", "非法", "越界", "回滚", "未生效", "标红", "报错", "禁止")
+_TAG_WORDS = ("正案例", "反案例", "正向案例", "反向案例", "正常案例", "异常案例",
+              "正向", "反向", "正例", "反例")
+
+# 每段至少需要的正向与反向场景条数
+MIN_POS, MIN_NEG = 2, 2
+
 
 def split_scenarios(text: str) -> list[tuple[int, str]]:
     """把测试文案按「场景N：」切成 [(序号, 正文)]，用于校验条数与编号。"""
@@ -359,6 +370,15 @@ def split_scenarios(text: str) -> list[tuple[int, str]]:
     for i in range(1, len(parts) - 1, 2):
         out.append((int(parts[i]), parts[i + 1].strip()))
     return out
+
+
+def classify_scene(body: str) -> str:
+    """按判据用词判断场景属于走通路径(pos)、拦截异常(neg)还是未分类。"""
+    if any(w in body for w in _NEG_WORDS):
+        return "neg"
+    if any(w in body for w in _POS_WORDS):
+        return "pos"
+    return "unknown"
 
 
 def check_test_sections(plan: dict) -> list[str]:
@@ -377,6 +397,10 @@ def check_test_sections(plan: dict) -> list[str]:
                 for kw in TEST_LEAD[stage]:
                     if kw not in text:
                         issues.append("%s%s 缺少固定导语「%s」" % (label, stage, kw))
+                hit_tag = [w for w in _TAG_WORDS if w in text]
+                if hit_tag:
+                    issues.append("%s%s 出现「%s」标签字样，应改用判据用词区分正反场景"
+                                  % (label, stage, hit_tag[0]))
                 scenes = split_scenarios(text)
                 if not scenes:
                     issues.append("%s%s 未使用「场景N：」句式" % (label, stage))
@@ -399,7 +423,13 @@ def check_test_sections(plan: dict) -> list[str]:
                     issues.append("%s业务测试场景数 %d 超过技术测试场景数 %d"
                                   % (label, len(scenes), tech_n))
 
+                pos_n = neg_n = 0
                 for num, body in scenes:
+                    kind = classify_scene(body)
+                    if kind == "pos":
+                        pos_n += 1
+                    elif kind == "neg":
+                        neg_n += 1
                     if len(body) < SCENE_MIN_LEN[stage]:
                         issues.append("%s%s 场景%d 过短（%d 字），须写清角色、入口、动作与观察点"
                                       % (label, stage, num, len(body)))
@@ -413,6 +443,13 @@ def check_test_sections(plan: dict) -> list[str]:
                     if stage == "业务测试" and _TABLE_NAME_RE.search(body):
                         issues.append("%s业务测试 场景%d 出现表名/字段名，应改写为业务可见结果"
                                       % (label, num))
+
+                if pos_n < MIN_POS:
+                    issues.append("%s%s 走通类场景仅 %d 条（至少 %d 条），需补正常路径验证"
+                                  % (label, stage, pos_n, MIN_POS))
+                if neg_n < MIN_NEG:
+                    issues.append("%s%s 拦截异常类场景仅 %d 条（至少 %d 条），需补边界、越权、超限等验证"
+                                  % (label, stage, neg_n, MIN_NEG))
 
     # Word 测试要点：模块级汇总，同样用「场景N：」连续编号
     for m in plan.get("modules") or []:

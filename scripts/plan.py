@@ -141,7 +141,7 @@ def cmd_check(args):
     issues = wldlib.check_plan(plan)
     if not issues:
         print("校验通过：模块名称一致、开发单条在 3.5-9.5 且均值≈7.5、各阶段条目数 6-10 条、"
-              "测试三段导语与场景句式合规（业务场景数≤技术测试场景数）、"
+              "测试三段 7-20 条场景、走通与拦截两类齐备且无标签、业务与准生产不超过技术测试、"
               "设计文档段落齐备、库用户（%s）与表清单一致。" % (plan.get("project", {}).get("db_user") or "-"))
         return 0
     print("发现 %d 个问题：" % len(issues))
